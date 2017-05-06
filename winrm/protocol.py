@@ -20,7 +20,6 @@ class Protocol(object):
     DEFAULT_OPERATION_TIMEOUT_SEC = 20
     DEFAULT_MAX_ENV_SIZE = 153600
     DEFAULT_LOCALE = 'en-US'
-    MAX_ENVELOPE_SIZE = 10*1024*1024
 
     def __init__(
             self, endpoint, transport='plaintext', username=None,
@@ -173,7 +172,7 @@ class Protocol(object):
                 },
                 'w:MaxEnvelopeSize': {
                     '@mustUnderstand': 'true',
-                    '#text': str(self.MAX_ENVELOPE_SIZE)
+                    '#text': str(self.DEFAULT_MAX_ENV_SIZE)
                 },
                 'a:MessageID': 'uuid:{0}'.format(message_id),
                 'w:Locale': {
