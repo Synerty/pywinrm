@@ -1,7 +1,9 @@
 from __future__ import unicode_literals
-import re
-from base64 import b64encode
+
 import xml.etree.ElementTree as ET
+from base64 import b64encode
+
+import re
 
 from winrm.protocol import Protocol
 
@@ -9,12 +11,15 @@ from winrm.protocol import Protocol
 # These values can be easily checked for with hasattr(winrm, "FEATURE_X"),
 # "'auth_type' in winrm.FEATURE_SUPPORTED_AUTHTYPES", etc for clients to sniff features
 # supported by a particular version of pywinrm
-FEATURE_SUPPORTED_AUTHTYPES=['basic', 'certificate', 'ntlm', 'kerberos', 'plaintext', 'ssl', 'credssp']
-FEATURE_READ_TIMEOUT=True
-FEATURE_OPERATION_TIMEOUT=True
+FEATURE_SUPPORTED_AUTHTYPES = ['basic', 'certificate', 'ntlm', 'kerberos', 'plaintext',
+                               'ssl', 'credssp']
+FEATURE_READ_TIMEOUT = True
+FEATURE_OPERATION_TIMEOUT = True
+
 
 class Response(object):
     """Response from a remote command execution"""
+
     def __init__(self, args):
         self.std_out, self.std_err, self.status_code = args
 
@@ -41,12 +46,87 @@ class Session(object):
         self.protocol.close_shell(shell_id)
         return rs
 
+    def run_ps_long(self, script):
+        """ Run PowerShell Long
+        
+        Base64 encodes a Powershell script and executes the powershell
+        encoded script command
+        """
+
+        shell_id = self.protocol.open_shell()
+
+        def run_command(command):
+            command_id = self.protocol.run_command(shell_id, command)
+            rs = Response(self.protocol.get_command_output(shell_id, command_id))
+            self.protocol.cleanup_command(shell_id, command_id)
+
+            # Powershell errors are returned in XML, clean them up
+            if len(rs.std_err):
+                rs.std_err = self._clean_error_msg(rs.std_err)
+            return rs
+
+        def make_ps_command(ps_script):
+            return ("powershell -encodedcommand %s"
+                    % b64encode(ps_script.encode("utf_16_le")))
+
+        def run_and_check_ps(command, stage_message):
+            rs = run_command(command)
+            if len(rs.std_err) or rs.status_code != 0:
+                self.protocol.close_shell(shell_id)
+                raise Exception("%s\n%s" % (stage_message, rs.std_err))
+            return rs.std_out
+
+        # Get the name of a temp file
+        cmd = ("$script_file = [IO.Path]::GetTempFileName() | "
+               " Rename-Item -NewName { $_ -replace 'tmp$', 'tmp.ps1' } -PassThru\n"
+               '"$script_file"')
+        script_file = run_and_check_ps(make_ps_command(cmd), "Creating temp script file")
+        script_file = script_file.strip()
+
+        # Append the data to the file
+        base64_script = b64encode(script)
+        chunk_size = 2000
+        for chunk_index in range(0, len(base64_script), chunk_size):
+            chunk = base64_script[chunk_index:chunk_index + chunk_size]
+            cmd = 'ECHO %s %s "%s" ' % (chunk,
+                                        ('>>' if chunk_index else '>'),
+                                        script_file)
+            run_and_check_ps(cmd, "writing chunk %s to temp script file" % chunk_index)
+
+        # Execute the powershell script
+        cmd = '''
+            # Convert it from b64 encoded
+            $b64 = get-content "%(script_file)s"
+            [System.Text.Encoding]::ASCII.GetString([System.Convert]::FromBase64String($b64)) |
+                out-file -Encoding Default "%(script_file)s"
+        ''' % {'script_file': script_file}
+        run_and_check_ps(make_ps_command(cmd),
+                         "Converting temp script file back from b64 encoding")
+
+        cmd = ("""PowerShell.exe -ExecutionPolicy Bypass -Command "& '%s' " """
+               % script_file)
+        rs = run_command(cmd)
+
+        # Finally, cleanup the temp file
+        cmd = "remove-item '%s' " % script_file
+        run_and_check_ps(make_ps_command(cmd), "Deleting temp script file")
+
+        self.protocol.close_shell(shell_id)
+
+        return rs
+
     def run_ps(self, script):
         """base64 encodes a Powershell script and executes the powershell
         encoded script command
         """
         # must use utf16 little endian on windows
         encoded_ps = b64encode(script.encode('utf_16_le')).decode('ascii')
+
+        # There is an issue with powershell scripts over 2k or 8k (platform dependent)
+        # You can not have a command line + argument longer than this
+        if len(encoded_ps) > 2000:
+            return self.run_ps_long(script)
+
         rs = self.run_cmd('powershell -encodedcommand {0}'.format(encoded_ps))
         if len(rs.std_err):
             # if there was an error message, clean it it up and make it human
@@ -102,7 +182,8 @@ class Session(object):
     @staticmethod
     def _build_url(target, transport):
         match = re.match(
-            '(?i)^((?P<scheme>http[s]?)://)?(?P<host>[0-9a-z-_.]+)(:(?P<port>\d+))?(?P<path>(/)?(wsman)?)?', target)  # NOQA
+            '(?i)^((?P<scheme>http[s]?)://)?(?P<host>[0-9a-z-_.]+)(:(?P<port>\d+))?(?P<path>(/)?(wsman)?)?',
+            target)  # NOQA
         scheme = match.group('scheme')
         if not scheme:
             # TODO do we have anything other than HTTP/HTTPS
