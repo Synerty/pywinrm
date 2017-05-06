@@ -207,4 +207,14 @@ class Transport(object):
 
             error_message = 'Bad HTTP response returned from server. Code {0}'.format(ex.response.status_code)
 
+            import xml.etree.ElementTree as ET
+
+            root = ET.fromstring(response_text)
+            ns = {'s': "http://www.w3.org/2003/05/soap-envelope",
+                  'a': "http://schemas.xmlsoap.org/ws/2004/08/addressing",
+                  'w': "http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd"}
+
+            for text in root.findall('s:Body/s:Fault/s:Reason/s:Text', ns):
+                error_message += "\n%s" % text.text
+
             raise WinRMTransportError('http', error_message)
