@@ -4,6 +4,8 @@ import base64
 import uuid
 
 import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta
+
 import xmltodict
 
 from six import text_type, binary_type
@@ -30,6 +32,7 @@ class Protocol(object):
             read_timeout_sec=DEFAULT_READ_TIMEOUT_SEC,
             operation_timeout_sec=DEFAULT_OPERATION_TIMEOUT_SEC,
             kerberos_hostname_override=None,
+            total_connection_lifetime=7200
         ):
         """
         @param string endpoint: the WinRM webservice endpoint
@@ -48,6 +51,9 @@ class Protocol(object):
         @param int operation_timeout_sec: maximum allowed time in seconds for any single wsman HTTP operation (default 20). Note that operation timeouts while receiving output (the only wsman operation that should take any significant time, and where these timeouts are expected) will be silently retried indefinitely. # NOQA
         @param string kerberos_hostname_override: the hostname to use for the kerberos exchange (defaults to the hostname in the endpoint URL)
         """
+
+        self._end_time = datetime.utcnow() + timedelta(seconds=total_connection_lifetime)
+        self._hack_abort = False
 
         if operation_timeout_sec >= read_timeout_sec or operation_timeout_sec < 1:
             raise WinRMError("read_timeout_sec must exceed operation_timeout_sec, and both must be non-zero")
@@ -332,15 +338,25 @@ class Protocol(object):
         """
         stdout_buffer, stderr_buffer = [], []
         command_done = False
-        while not command_done:
+        while (not command_done
+               and datetime.utcnow() <= self._end_time
+               and not self._hack_abort):
             try:
                 stdout, stderr, return_code, command_done = \
                     self._raw_get_command_output(shell_id, command_id)
                 stdout_buffer.append(stdout)
                 stderr_buffer.append(stderr)
+
             except WinRMOperationTimeoutError as e:
                 # this is an expected error when waiting for a long-running process, just silently retry
                 pass
+
+        if self._hack_abort:
+            return b'', b'\nOperation aborted by user', -1
+
+        if datetime.utcnow() > self._end_time:
+            return b'', b'\nOperation aborted, timeout reached', -1
+
         return b''.join(stdout_buffer), b''.join(stderr_buffer), return_code
 
     def _raw_get_command_output(self, shell_id, command_id):
