@@ -130,7 +130,7 @@ class Protocol(object):
                 env['rsp:Variable'] = {'@Name': key, '#text': value}
 
         message = xmltodict.unparse(req)
-        if len(message) >= self.MAX_ENVELOPE_SIZE:
+        if len(message) >= self.max_env_sz:
             raise Exception("pywinrm MAX_ENVELOPE_SIZE exceeded")
 
         res = self.send_message(message)
@@ -172,7 +172,7 @@ class Protocol(object):
                 },
                 'w:MaxEnvelopeSize': {
                     '@mustUnderstand': 'true',
-                    '#text': str(self.DEFAULT_MAX_ENV_SIZE)
+                    '#text': str(self.max_env_sz)
                 },
                 'a:MessageID': 'uuid:{0}'.format(message_id),
                 'w:Locale': {
