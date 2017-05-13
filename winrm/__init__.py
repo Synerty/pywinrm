@@ -30,6 +30,8 @@ class Response(object):
 
 
 class Session(object):
+    maxEnvelopeSize = 2000
+
     # TODO implement context manager methods
     def __init__(self, target, auth, **kwargs):
         username, password = auth
@@ -55,9 +57,10 @@ class Session(object):
 
         shell_id = self.protocol.open_shell()
 
-        def run_command(command):
+        def run_command(command, useResultLogger=True):
             command_id = self.protocol.run_command(shell_id, command)
-            rs = Response(self.protocol.get_command_output(shell_id, command_id))
+            rs = Response(self.protocol.get_command_output(
+                shell_id, command_id, useResultLogger=useResultLogger))
             self.protocol.cleanup_command(shell_id, command_id)
 
             # Powershell errors are returned in XML, clean them up
@@ -69,8 +72,8 @@ class Session(object):
             return ("powershell -encodedcommand %s"
                     % b64encode(ps_script.encode("utf_16_le")))
 
-        def run_and_check_ps(command, stage_message):
-            rs = run_command(command)
+        def run_and_check_ps(command, stage_message, useResultLogger=True):
+            rs = run_command(command, useResultLogger=useResultLogger)
             if len(rs.std_err) or rs.status_code != 0:
                 self.protocol.close_shell(shell_id)
                 raise Exception("%s\n%s" % (stage_message, rs.std_err))
@@ -80,18 +83,20 @@ class Session(object):
         cmd = ("$script_file = [IO.Path]::GetTempFileName() | "
                " Rename-Item -NewName { $_ -replace 'tmp$', 'tmp.ps1' } -PassThru\n"
                '"$script_file"')
-        script_file = run_and_check_ps(make_ps_command(cmd), "Creating temp script file")
+        script_file = run_and_check_ps(make_ps_command(cmd),
+                                       "Creating temp script file",
+                                       useResultLogger=False)
         script_file = script_file.strip()
 
         # Append the data to the file
         base64_script = b64encode(script)
-        chunk_size = 2000
-        for chunk_index in range(0, len(base64_script), chunk_size):
-            chunk = base64_script[chunk_index:chunk_index + chunk_size]
+        for chunk_index in range(0, len(base64_script), self.maxEnvelopeSize):
+            chunk = base64_script[chunk_index:chunk_index + self.maxEnvelopeSize]
             cmd = 'ECHO %s %s "%s" ' % (chunk,
                                         ('>>' if chunk_index else '>'),
                                         script_file)
-            run_and_check_ps(cmd, "writing chunk %s to temp script file" % chunk_index)
+            run_and_check_ps(cmd,
+                             "writing chunk %s to temp script file" % chunk_index)
 
         # Execute the powershell script
         cmd = '''
@@ -124,7 +129,7 @@ class Session(object):
 
         # There is an issue with powershell scripts over 2k or 8k (platform dependent)
         # You can not have a command line + argument longer than this
-        if len(encoded_ps) > 2000:
+        if len(encoded_ps) > self.maxEnvelopeSize:
             return self.run_ps_long(script)
 
         rs = self.run_cmd('powershell -encodedcommand {0}'.format(encoded_ps))

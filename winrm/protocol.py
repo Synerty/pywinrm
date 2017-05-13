@@ -1,17 +1,20 @@
 """Contains client side logic of WinRM SOAP protocol implementation"""
 from __future__ import unicode_literals
-import base64
-import uuid
 
+import base64
+import logging
+import uuid
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 
 import xmltodict
+from six import text_type
 
-from six import text_type, binary_type
-
-from winrm.transport import Transport
 from winrm.exceptions import WinRMError, WinRMOperationTimeoutError
+from winrm.transport import Transport
+
+logger = logging.getLogger(__name__)
+
 
 class Protocol(object):
     """This is the main class that does the SOAP request/response logic. There
@@ -32,8 +35,9 @@ class Protocol(object):
             read_timeout_sec=DEFAULT_READ_TIMEOUT_SEC,
             operation_timeout_sec=DEFAULT_OPERATION_TIMEOUT_SEC,
             kerberos_hostname_override=None,
-            total_connection_lifetime=7200
-        ):
+            total_connection_lifetime=7200,
+            resultLogger=None
+    ):
         """
         @param string endpoint: the WinRM webservice endpoint
         @param string transport: transport type, one of 'plaintext' (default), 'kerberos', 'ssl', 'ntlm', 'credssp'  # NOQA
@@ -52,11 +56,14 @@ class Protocol(object):
         @param string kerberos_hostname_override: the hostname to use for the kerberos exchange (defaults to the hostname in the endpoint URL)
         """
 
+        self.resultLogger = resultLogger
+
         self._end_time = datetime.utcnow() + timedelta(seconds=total_connection_lifetime)
         self._hack_abort = False
 
         if operation_timeout_sec >= read_timeout_sec or operation_timeout_sec < 1:
-            raise WinRMError("read_timeout_sec must exceed operation_timeout_sec, and both must be non-zero")
+            raise WinRMError(
+                "read_timeout_sec must exceed operation_timeout_sec, and both must be non-zero")
 
         self.read_timeout_sec = read_timeout_sec
         self.operation_timeout_sec = operation_timeout_sec
@@ -100,7 +107,8 @@ class Protocol(object):
         @rtype string
         """
         req = {'env:Envelope': self._get_soap_header(
-            resource_uri='http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd',  # NOQA
+            resource_uri='http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd',
+            # NOQA
             action='http://schemas.xmlsoap.org/ws/2004/09/transfer/Create')}
         header = req['env:Envelope']['env:Header']
         header['w:OptionSet'] = {
@@ -125,7 +133,7 @@ class Protocol(object):
             # TODO ensure that rsp:WorkingDirectory should be nested within rsp:Shell  # NOQA
             shell['rsp:WorkingDirectory'] = working_directory
             # TODO check Lifetime param: http://msdn.microsoft.com/en-us/library/cc251546(v=PROT.13).aspx  # NOQA
-            #if lifetime:
+            # if lifetime:
             #    shell['rsp:Lifetime'] = iso8601_duration.sec_to_dur(lifetime)
         # TODO make it so the input is given in milliseconds and converted to xs:duration  # NOQA
         if idle_timeout:
@@ -141,8 +149,8 @@ class Protocol(object):
 
         res = self.send_message(message)
 
-        #res = xmltodict.parse(res)
-        #return res['s:Envelope']['s:Body']['x:ResourceCreated']['a:ReferenceParameters']['w:SelectorSet']['w:Selector']['#text']
+        # res = xmltodict.parse(res)
+        # return res['s:Envelope']['s:Body']['x:ResourceCreated']['a:ReferenceParameters']['w:SelectorSet']['w:Selector']['#text']
         root = ET.fromstring(res)
         return next(
             node for node in root.findall('.//*')
@@ -165,7 +173,8 @@ class Protocol(object):
             '@xmlns:x': 'http://schemas.xmlsoap.org/ws/2004/09/transfer',
             '@xmlns:w': 'http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd',
             '@xmlns:p': 'http://schemas.microsoft.com/wbem/wsman/1/wsman.xsd',
-            '@xmlns:rsp': 'http://schemas.microsoft.com/wbem/wsman/1/windows/shell',  # NOQA
+            '@xmlns:rsp': 'http://schemas.microsoft.com/wbem/wsman/1/windows/shell',
+            # NOQA
             '@xmlns:cfg': 'http://schemas.microsoft.com/wbem/wsman/1/config',
 
             'env:Header': {
@@ -173,7 +182,8 @@ class Protocol(object):
                 'a:ReplyTo': {
                     'a:Address': {
                         '@mustUnderstand': 'true',
-                        '#text': 'http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous'  # NOQA
+                        '#text': 'http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous'
+                        # NOQA
                     }
                 },
                 'w:MaxEnvelopeSize': {
@@ -228,7 +238,8 @@ class Protocol(object):
         """
         message_id = uuid.uuid4()
         req = {'env:Envelope': self._get_soap_header(
-            resource_uri='http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd',  # NOQA
+            resource_uri='http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd',
+            # NOQA
             action='http://schemas.xmlsoap.org/ws/2004/09/transfer/Delete',
             shell_id=shell_id,
             message_id=message_id)}
@@ -261,8 +272,10 @@ class Protocol(object):
         @rtype string
         """
         req = {'env:Envelope': self._get_soap_header(
-            resource_uri='http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd',  # NOQA
-            action='http://schemas.microsoft.com/wbem/wsman/1/windows/shell/Command',  # NOQA
+            resource_uri='http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd',
+            # NOQA
+            action='http://schemas.microsoft.com/wbem/wsman/1/windows/shell/Command',
+            # NOQA
             shell_id=shell_id)}
         header = req['env:Envelope']['env:Header']
         header['w:OptionSet'] = {
@@ -281,7 +294,8 @@ class Protocol(object):
             'env:Body', {}).setdefault('rsp:CommandLine', {})
         cmd_line['rsp:Command'] = {'#text': command}
         if arguments:
-            unicode_args = [a if isinstance(a, text_type) else a.decode('utf-8') for a in arguments]
+            unicode_args = [a if isinstance(a, text_type) else a.decode('utf-8') for a in
+                            arguments]
             cmd_line['rsp:Arguments'] = u' '.join(unicode_args)
 
         res = self.send_message(xmltodict.unparse(req))
@@ -304,8 +318,10 @@ class Protocol(object):
         """
         message_id = uuid.uuid4()
         req = {'env:Envelope': self._get_soap_header(
-            resource_uri='http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd',  # NOQA
-            action='http://schemas.microsoft.com/wbem/wsman/1/windows/shell/Signal',  # NOQA
+            resource_uri='http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd',
+            # NOQA
+            action='http://schemas.microsoft.com/wbem/wsman/1/windows/shell/Signal',
+            # NOQA
             shell_id=shell_id,
             message_id=message_id)}
 
@@ -313,7 +329,8 @@ class Protocol(object):
         signal = req['env:Envelope'].setdefault(
             'env:Body', {}).setdefault('rsp:Signal', {})
         signal['@CommandId'] = command_id
-        signal['rsp:Code'] = 'http://schemas.microsoft.com/wbem/wsman/1/windows/shell/signal/terminate'  # NOQA
+        signal[
+            'rsp:Code'] = 'http://schemas.microsoft.com/wbem/wsman/1/windows/shell/signal/terminate'  # NOQA
 
         res = self.send_message(xmltodict.unparse(req))
         root = ET.fromstring(res)
@@ -323,7 +340,7 @@ class Protocol(object):
         # TODO change assert into user-friendly exception
         assert uuid.UUID(relates_to.replace('uuid:', '')) == message_id
 
-    def get_command_output(self, shell_id, command_id):
+    def get_command_output(self, shell_id, command_id, useResultLogger=True):
         """
         Get the Output of the given shell and command
         @param string shell_id: The shell id on the remote machine.
@@ -336,33 +353,76 @@ class Protocol(object):
          we can get the output in the order it ocurrs on
         #   the console.
         """
+        useResultLoggerEnabled = True
         stdout_buffer, stderr_buffer = [], []
         command_done = False
+        return_code = 0
+
         while (not command_done
                and datetime.utcnow() <= self._end_time
                and not self._hack_abort):
+
             try:
                 stdout, stderr, return_code, command_done = \
                     self._raw_get_command_output(shell_id, command_id)
-                stdout_buffer.append(stdout)
-                stderr_buffer.append(stderr)
+
+                for stdoutLin in stdout.splitlines():
+                    stdoutLin = stdoutLin.strip()
+                    if not stdoutLin:
+                        continue
+
+                    if stdoutLin == 'LOG.DISABLE':
+                        useResultLoggerEnabled = False
+
+                    useLogger = (self.resultLogger
+                                 and useResultLogger
+                                 and useResultLoggerEnabled)
+
+                    if stdoutLin.startswith('({['):
+                        stdout_buffer.append(stdoutLin)
+
+                    elif useLogger:
+                        self.resultLogger.addStdout(stdoutLin)
+
+                    else:
+                        stdout_buffer.append(stdoutLin)
+
+                    if stdoutLin == 'LOG.ENABLE':
+                        useResultLoggerEnabled = True
+
+                for stderrLin in stderr.splitlines():
+                    stderrLin = stderrLin.strip()
+                    if not stderrLin:
+                        continue
+
+                    if self.resultLogger and useResultLogger:
+                        self.resultLogger.addStderr(stderrLin)
+
+                    else:
+                        stderr_buffer.append(stderrLin)
 
             except WinRMOperationTimeoutError as e:
-                # this is an expected error when waiting for a long-running process, just silently retry
+                logger.exception(e)
+                # this is an expected error when waiting for a long-running process,
+                # just silently retry
                 pass
 
         if self._hack_abort:
-            return b'', b'\nOperation aborted by user', -1
+            return_code = -1
+            self.resultLogger.addError('Operation aborted by user')
 
         if datetime.utcnow() > self._end_time:
-            return b'', b'\nOperation aborted, timeout reached', -1
+            return_code = -1
+            self.resultLogger.addError('Operation aborted, timeout reached')
 
-        return b''.join(stdout_buffer), b''.join(stderr_buffer), return_code
+        return b'\n'.join(stdout_buffer), b'\n'.join(stderr_buffer), return_code
 
     def _raw_get_command_output(self, shell_id, command_id):
         req = {'env:Envelope': self._get_soap_header(
-            resource_uri='http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd',  # NOQA
-            action='http://schemas.microsoft.com/wbem/wsman/1/windows/shell/Receive',  # NOQA
+            resource_uri='http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd',
+            # NOQA
+            action='http://schemas.microsoft.com/wbem/wsman/1/windows/shell/Receive',
+            # NOQA
             shell_id=shell_id)}
 
         stream = req['env:Envelope'].setdefault('env:Body', {}).setdefault(
